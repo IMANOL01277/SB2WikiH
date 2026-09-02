@@ -1,0 +1,435 @@
+"""
+wiki_scraper.py
+~~~~~~~~~~~~~~~
+Scraper del Item Database del fandom de SwordBurst 2.
+Extrae todos los items de todas las categorias y retorna una lista de dicts.
+"""
+
+import logging
+import re
+import time
+from urllib.parse import urljoin, unquote
+
+import requests
+from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
+
+BASE_URL = "https://swordburst2.fandom.com"
+ITEM_DB_URL = f"{BASE_URL}/wiki/Item_Database"
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+# Mapeo de seccion del wiki a tipo canonico
+SECTION_TYPE_MAP = {
+    "longswords":  ("Longsword",  "Weapon"),
+    "greatswords": ("Greatsword", "Weapon"),
+    "katanas":     ("Katana",     "Weapon"),
+    "rapiers":     ("Rapier",     "Weapon"),
+    "spears":      ("Spear",      "Weapon"),
+    "scythes":     ("Scythe",     "Weapon"),
+    "armors":      ("Armor",      "Armor"),
+    "accessories": ("Accessory",  "Accessory"),
+    "droppedvelboughtaccessories": ("Accessory", "Accessory"),
+    "companions":  ("Companion",  "Companion"),
+}
+
+# Criticos por tipo de arma (default del juego)
+DEFAULT_CRIT = {
+    "Longsword":  "12%",
+    "Greatsword": "18%",
+    "Katana":     "15%",
+    "Rapier":     "11%",
+    "Spear":      "21%",
+    "Scythe":     "18%",
+}
+
+
+import cloudscraper
+
+def _fetch_page(url: str, retries: int = 3) -> BeautifulSoup | None:
+    """Descarga y parsea una pagina HTML usando cloudscraper."""
+    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+    for attempt in range(1, retries + 1):
+        try:
+            resp = scraper.get(url, timeout=30)
+            resp.raise_for_status()
+            return BeautifulSoup(resp.text, "lxml")
+        except Exception as exc:
+            logger.warning(f"Intento {attempt} fallido ({url}): {exc}")
+            if attempt < retries:
+                time.sleep(2 ** attempt)
+    logger.error(f"No se pudo descargar: {url}")
+    return None
+
+
+def _get_image_url(img_tag) -> str:
+    """Extrae la URL real de la imagen (soporta lazy-load de Fandom)."""
+    if not img_tag:
+        return ""
+    # Fandom usa data-src para lazy loading
+    src = (
+        img_tag.get("data-src")
+        or img_tag.get("src")
+        or ""
+    )
+    # Limpiar parametros de resize y quedarse con la URL base hasta /revision/latest
+    if "wikia.nocookie.net" in src or "static.wikia" in src:
+        # Remover parametros de escala para obtener imagen completa
+        base = src.split("/scale-to-width")[0].split("/smart/")[0].split("/top-crop")[0]
+        if "/revision/latest" not in base:
+            base = src  # usar tal cual si no tiene el patron
+        return base
+    return src
+
+
+def _clean_text(text: str) -> str:
+    """Limpia texto de espacios extra y caracteres de control."""
+    return re.sub(r"\s+", " ", text).strip()
+
+def _get_cell_text(cells, index: int) -> str:
+    """Obtiene el texto limpio de una celda si el indice es valido."""
+    if index >= 0 and index < len(cells):
+        return _clean_text(cells[index].get_text())
+    return ""
+
+def _parse_item_common(cells, headers_map: dict) -> tuple:
+    """Extrae datos comunes (imagen, nombre, link, nivel, rareza, obtain)."""
+    # Name and Image are usually in the same cell, denoted by 'name' or index 0 if not found
+    name_idx = headers_map.get("name", 0)
+    if name_idx >= len(cells):
+        return None, "", "", "", "", "", ""
+        
+    name_cell = cells[name_idx]
+    
+    img_tag = name_cell.find("img")
+    image_url = _get_image_url(img_tag)
+
+    name_link = name_cell.find("a", string=True) # string=True to ignore image links
+    if name_link:
+        name = _clean_text(name_link.get_text())
+        wiki_link = urljoin(BASE_URL, name_link.get("href", ""))
+    else:
+        # fallback to get all text not in tags or just general text
+        text = name_cell.get_text()
+        name = _clean_text(text)
+        wiki_link = ""
+
+    if not name or name.lower() in ("name", "", "pros:", "cons:"):
+        return None, "", "", "", "", "", ""
+        
+    if len(name) > 50:
+        return None, "", "", "", "", "", ""
+
+    level_idx = headers_map.get("lv.", headers_map.get("level", headers_map.get("floor", -1)))
+    level_text = _get_cell_text(cells, level_idx)
+    level = _extract_level(level_text)
+
+    rarity_idx = headers_map.get("rarity", -1)
+    rarity_text = _get_cell_text(cells, rarity_idx)
+    rarity = _normalize_rarity(rarity_text)
+    
+    obtain_idx = headers_map.get("cost/drop", headers_map.get("obtain", headers_map.get("dropped by", -1)))
+    obtain = _get_cell_text(cells, obtain_idx)
+
+    return name_cell, name, wiki_link, image_url, level, rarity_text, rarity, obtain
+
+
+def _parse_weapon_row(cells, headers_map: dict, item_type: str) -> dict | None:
+    res = _parse_item_common(cells, headers_map)
+    if not res[0]:
+        return None
+    _, name, wiki_link, image_url, level, rarity_text, rarity, obtain = res
+
+    # Base DMG
+    base_dmg_idx = headers_map.get("damage", headers_map.get("base damage", headers_map.get("base dmg", -1)))
+    base_dmg = _get_cell_text(cells, base_dmg_idx)
+    
+    # Crit
+    crit_idx = headers_map.get("crit", headers_map.get("critical", -1))
+    crit = _get_cell_text(cells, crit_idx) or DEFAULT_CRIT.get(item_type, "")
+
+    # Max DMG - sometimes +20 or +15 or max damage
+    max_dmg = ""
+    for h in ["+25", "+20", "+15", "+10", "max damage", "max dmg"]:
+        if h in headers_map:
+            max_dmg = _get_cell_text(cells, headers_map[h])
+            break
+
+    return {
+        "name":           name,
+        "type":           item_type,
+        "sub_type":       _detect_sub_type(name, rarity_text),
+        "category":       "Weapon",
+        "rarity":         rarity,
+        "level":          level,
+        "base_dmg":       base_dmg,
+        "max_dmg":        max_dmg,
+        "base_def":       "",
+        "max_def":        "",
+        "upgradeable":    _is_upgradeable(rarity),
+        "crit":           crit,
+        "health_regen":   "",
+        "stamina_regen":  "",
+        "obtain":         obtain,
+        "image_link":     image_url,
+        "wiki_link":      wiki_link,
+    }
+
+
+def _parse_armor_row(cells, headers_map: dict) -> dict | None:
+    res = _parse_item_common(cells, headers_map)
+    if not res[0]:
+        return None
+    _, name, wiki_link, image_url, level, rarity_text, rarity, obtain = res
+
+    base_def = _get_cell_text(cells, headers_map.get("defense", headers_map.get("base defense", headers_map.get("base def", -1))))
+    
+    max_def = ""
+    for h in ["+25", "+20", "+15", "+10", "max defense", "max def"]:
+        if h in headers_map:
+            max_def = _get_cell_text(cells, headers_map[h])
+            break
+
+    return {
+        "name":           name,
+        "type":           "Armor",
+        "sub_type":       _detect_sub_type(name, rarity_text),
+        "category":       "Armor",
+        "rarity":         rarity,
+        "level":          level,
+        "base_dmg":       "",
+        "max_dmg":        "",
+        "base_def":       base_def,
+        "max_def":        max_def,
+        "upgradeable":    _is_upgradeable(rarity),
+        "crit":           "",
+        "health_regen":   "",
+        "stamina_regen":  "",
+        "obtain":         obtain,
+        "image_link":     image_url,
+        "wiki_link":      wiki_link,
+    }
+
+
+def _parse_accessory_row(cells, headers_map: dict) -> dict | None:
+    res = _parse_item_common(cells, headers_map)
+    if not res[0]:
+        return None
+    _, name, wiki_link, image_url, level, rarity_text, rarity, obtain = res
+
+    # En accesorios los stats pueden estar en una sola columna "stats" o separados
+    health_regen = ""
+    stamina_regen = ""
+    
+    # Check if there is a 'stats' column
+    stats_idx = headers_map.get("stats", -1)
+    if stats_idx >= 0:
+        txt = _get_cell_text(cells, stats_idx)
+        if "health" in txt.lower() or "hp" in txt.lower():
+            m = re.search(r"(\d+\.?\d*%?)", txt[txt.lower().find("h"):])
+            if m: health_regen = m.group(1)
+        if "stamina" in txt.lower() or "stam" in txt.lower():
+            m = re.search(r"(\d+\.?\d*%?)", txt[txt.lower().find("s"):])
+            if m: stamina_regen = m.group(1)
+
+    return {
+        "name":           name,
+        "type":           "Accessory",
+        "sub_type":       "",
+        "category":       "Accessory",
+        "rarity":         rarity,
+        "level":          level,
+        "base_dmg":       "",
+        "max_dmg":        "",
+        "base_def":       "",
+        "max_def":        "",
+        "upgradeable":    "FALSE",
+        "crit":           "",
+        "health_regen":   health_regen,
+        "stamina_regen":  stamina_regen,
+        "obtain":         obtain,
+        "image_link":     image_url,
+        "wiki_link":      wiki_link,
+    }
+
+
+def _parse_companion_row(cells, headers_map: dict) -> dict | None:
+    res = _parse_item_common(cells, headers_map)
+    if not res[0]:
+        return None
+    _, name, wiki_link, image_url, level, rarity_text, rarity, obtain = res
+
+    return {
+        "name":           name,
+        "type":           "Companion",
+        "sub_type":       "",
+        "category":       "Companion",
+        "rarity":         rarity,
+        "level":          "",
+        "base_dmg":       "",
+        "max_dmg":        "",
+        "base_def":       "",
+        "max_def":        "",
+        "upgradeable":    "FALSE",
+        "crit":           "",
+        "health_regen":   "",
+        "stamina_regen":  "",
+        "obtain":         obtain,
+        "image_link":     image_url,
+        "wiki_link":      wiki_link,
+    }
+
+
+def _extract_level(text: str) -> str:
+    """Extrae el numero de nivel de textos como 'Floor 5', '50', '1-5'."""
+    if not text:
+        return ""
+    # Numero directo
+    if re.match(r"^-?\d+$", text):
+        return text
+    # Floor N
+    m = re.search(r"floor\s*(\d+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    # Nivel con operacion: "3+lvl"
+    if "lvl" in text.lower() or "+" in text:
+        return text
+    # Primer numero encontrado
+    m = re.search(r"(\d+)", text)
+    if m:
+        return m.group(1)
+    return text
+
+
+def _normalize_rarity(rarity_text: str) -> str:
+    """Normaliza el texto de rareza a un valor canonico."""
+    mapping = {
+        "common":    "Common",
+        "uncommon":  "Uncommon",
+        "rare":      "Rare",
+        "legendary": "Legendary",
+        "tribute":   "Tribute",
+        "burst":     "Burst",
+        "limited":   "Legendary",
+    }
+    rt = rarity_text.lower().strip()
+    for key, val in mapping.items():
+        if key in rt:
+            return val
+    return rarity_text.title() if rarity_text else ""
+
+
+def _is_upgradeable(rarity: str) -> str:
+    """Determina si el item es upgradeable segun su rareza."""
+    non_upgradeable = {"tribute", "burst"}
+    if rarity.lower() in non_upgradeable:
+        return "FALSE"
+    return "TRUE"
+
+
+def _detect_sub_type(name: str, rarity_text: str) -> str:
+    """Detecta el sub_type basado en el nombre o texto de rareza."""
+    nl = name.lower()
+    rl = rarity_text.lower()
+    if "limited" in rl or "limited" in nl:
+        return "Limited"
+    if "forgotten" in nl:
+        return f"Forgotten {name.split()[0] if name.split() else ''}"
+    return ""
+
+
+def _parse_table_for_section(section_key: str, table, item_type: str, category: str) -> list[dict]:
+    """Parsea una tabla wikitable y retorna lista de items."""
+    items = []
+    
+    # Extraer headers de la tabla para saber en que columna esta cada dato
+    headers = [th.get_text().strip().lower() for th in table.find_all("th")]
+    headers_map = {h: i for i, h in enumerate(headers) if h}
+    
+    rows = table.find_all("tr")
+
+    data_rows = []
+    for row in rows:
+        if row.find("th"):
+            continue
+        cells = row.find_all("td")
+        if cells:
+            data_rows.append(cells)
+
+    for cells in data_rows:
+        try:
+            if category == "Weapon":
+                item = _parse_weapon_row(cells, headers_map, item_type)
+            elif category == "Armor":
+                item = _parse_armor_row(cells, headers_map)
+            elif category == "Accessory":
+                item = _parse_accessory_row(cells, headers_map)
+            elif category == "Companion":
+                item = _parse_companion_row(cells, headers_map)
+            else:
+                item = None
+
+            if item and item.get("name"):
+                items.append(item)
+        except Exception as exc:
+            logger.debug(f"Error parseando fila en {section_key}: {exc}")
+
+    return items
+
+
+def scrape_item_database() -> list[dict]:
+    """
+    Funcion principal: scrape completo del Item Database.
+    Retorna lista de dicts con todos los items.
+    """
+    logger.info(f"Descargando Item Database: {ITEM_DB_URL}")
+    soup = _fetch_page(ITEM_DB_URL)
+    if not soup:
+        logger.error("No se pudo obtener la pagina del Item Database")
+        return []
+
+    all_items = []
+    seen_names = set()
+
+    for table in soup.find_all("table"):
+        # Buscar el encabezado principal h2 mas cercano hacia atras
+        h2 = table.find_previous("h2")
+        if not h2:
+            continue
+        
+        heading_text = _clean_text(h2.get_text()).lower()
+        heading_text = re.sub(r"\[.*?\]", "", heading_text).strip()
+        heading_key = re.sub(r"[^a-z]", "", heading_text)
+
+        if heading_key in SECTION_TYPE_MAP:
+            current_type, current_category = SECTION_TYPE_MAP[heading_key]
+            
+            section_items = _parse_table_for_section(
+                heading_key, table, current_type, current_category
+            )
+            for item in section_items:
+                name_lower = item["name"].lower()
+                if name_lower not in seen_names:
+                    seen_names.add(name_lower)
+                    all_items.append(item)
+                else:
+                    logger.debug(f"Item duplicado ignorado: {item['name']}")
+
+    logger.info(f"Total items scrapeados del wiki: {len(all_items)}")
+    return all_items
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    items = scrape_item_database()
+    print(f"\nTotal items: {len(items)}")
+    for item in items[:5]:
+        print(item)

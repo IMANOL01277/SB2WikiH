@@ -1,0 +1,65 @@
+﻿name: "Update SB2ItemDB"
+
+on:
+  schedule:
+    # Cada 35 minutos (GitHub Actions minimo es 5 min, 35 es valido)
+    - cron: "5,40 * * * *"
+  workflow_dispatch:
+    inputs:
+      force_commit:
+        description: "Forzar commit aunque no haya cambios"
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+
+jobs:
+  update-db:
+    name: "Scrape & Update CSV"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: "Checkout repo"
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: "Setup Python 3.11"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: "Install dependencies"
+        run: pip install -r requirements.txt
+
+      - name: "Run scraper pipeline"
+        run: python -m scraper.main
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+
+      - name: "Commit & Push if changed"
+        run: |
+          git config --local user.name  "SB2ItemDB Bot"
+          git config --local user.email "sb2itemdb-bot@github.com"
+          git add SB2ItemDB.csv
+          
+          # Revisar si hay cambios staged
+          if git diff --staged --quiet && [ "${{ github.event.inputs.force_commit }}" != "true" ]; then
+            echo "No hay cambios en SB2ItemDB.csv — nada que commitear"
+            exit 0
+          fi
+          
+          TIMESTAMP=$(date -u "+%Y-%m-%d %H:%M UTC")
+          ITEM_COUNT=$(tail -n +2 SB2ItemDB.csv | grep -c "." || echo "?")
+          
+          git commit -m "chore: auto-update SB2ItemDB [${TIMESTAMP}]
+
+          Items totales: ${ITEM_COUNT}
+          Fuente: swordburst2.fandom.com + Google Sheets precios P2P
+          Trigger: ${{ github.event_name }}"
+          
+          git push
+          echo "CSV actualizado y pusheado exitosamente"
