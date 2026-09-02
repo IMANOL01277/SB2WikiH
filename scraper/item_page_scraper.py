@@ -1,4 +1,4 @@
-﻿"""
+"""
 item_page_scraper.py
 ~~~~~~~~~~~~~~~~~~~~~
 Visita las paginas individuales de cada item en el wiki de SB2
@@ -94,9 +94,23 @@ def scrape_item_page(wiki_link: str, scraper=None) -> dict:
                 if "level" in h and len(row_data) > h.index("level"):
                     result["level"] = row_data[h.index("level")]
                 if "base damage" in h and len(row_data) > h.index("base damage"):
-                    clean, max_ = _parse_clean_max(row_data[h.index("base damage")])
-                    result["base_dmg_clean"] = clean
-                    result["base_dmg_max"]   = max_
+                    raw_dmg = row_data[h.index("base damage")]
+                    raw_lower = raw_dmg.lower()
+
+                    # Detectar arma level-scaling (dmg aumenta por nivel, no upgradeable)
+                    if "per level" in raw_lower or "based on level" in raw_lower or "level based" in raw_lower:
+                        result["level_scaling"] = True
+                        result["upgradeable"] = "FALSE"
+                        # Guardar la formula de escalado como dmg_clean (ej: "+145 per level")
+                        formula = re.sub(r"\s+", " ", raw_dmg).strip()
+                        result["base_dmg_clean"] = formula
+                        result["base_dmg_max"]   = ""
+                    else:
+                        result["level_scaling"] = False
+                        clean, max_ = _parse_clean_max(raw_dmg)
+                        result["base_dmg_clean"] = clean
+                        result["base_dmg_max"]   = max_
+
                 if "crit" in h and len(row_data) > h.index("crit"):
                     result["crit"] = row_data[h.index("crit")]
 
@@ -179,6 +193,9 @@ def enrich_items(items: list) -> list:
         # Sobrescribir con datos de la pagina individual (mas precisos)
         if extra.get("level"):
             item["level"] = extra["level"]
+        
+        if extra.get("upgradeable"):
+            item["upgradeable"] = extra["upgradeable"]
 
         if category == "Weapon":
             if extra.get("base_dmg_clean"):
