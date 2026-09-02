@@ -1,4 +1,4 @@
-﻿"""
+"""
 main.py
 ~~~~~~~
 Orquestador principal del pipeline SB2ItemDB.
@@ -53,8 +53,17 @@ def main() -> int:
 
     logger.info(f"Items obtenidos del wiki: {len(wiki_items)}")
 
-    # --- Paso 2: Fetch precios ---
-    logger.info("\n[2/3] Descargando precios del Google Sheets...")
+    # --- Paso 2: Enriquecer con datos de paginas individuales (Clean/Max damage) ---
+    logger.info("\n[2/4] Enriqueciendo items con Clean/Max damage de paginas individuales...")
+    try:
+        from scraper.item_page_scraper import enrich_items
+        wiki_items = enrich_items(wiki_items)
+    except Exception as exc:
+        logger.error(f"Error en enriquecimiento individual: {exc}", exc_info=True)
+        logger.warning("Continuando sin datos de Clean/Max por pagina individual")
+
+    # --- Paso 3: Fetch precios ---
+    logger.info("\n[3/4] Descargando precios del Google Sheets...")
     try:
         from scraper.price_scraper import fetch_all_prices
         prices = fetch_all_prices()
@@ -66,8 +75,8 @@ def main() -> int:
 
     logger.info(f"Items con precio encontrados: {len(prices)}")
 
-    # --- Paso 3: Merge y escribir CSV ---
-    logger.info("\n[3/3] Generando SB2ItemDB.csv...")
+    # --- Paso 4: Merge y escribir CSV ---
+    logger.info("\n[4/4] Generando SB2ItemDB.csv...")
     try:
         from scraper.merge import build_csv
         total, with_prices, changed = build_csv(wiki_items, prices, CSV_PATH)

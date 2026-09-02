@@ -1,4 +1,4 @@
-﻿"""
+"""
 merge.py
 ~~~~~~~~
 Une los datos del wiki con los precios del sheet P2P y genera SB2ItemDB.csv.
@@ -21,10 +21,10 @@ CSV_COLUMNS = [
     "category",
     "rarity",
     "level",
-    "base_dmg",
-    "max_dmg",
-    "base_def",
-    "max_def",
+    "dmg_clean",
+    "dmg_max",
+    "def_clean",
+    "def_max",
     "upgradeable",
     "crit",
     "health_regen",
@@ -221,8 +221,8 @@ if __name__ == "__main__":
     # Test rapido
     test_items = [
         {"name": "Desert Storm", "type": "Longsword", "sub_type": "", "category": "Weapon",
-         "rarity": "Legendary", "level": "50", "base_dmg": "419", "max_dmg": "838",
-         "base_def": "", "max_def": "", "upgradeable": "TRUE", "crit": "12%",
+         "rarity": "Legendary", "level": "50", "dmg_clean": "419", "dmg_max": "838",
+         "def_clean": "", "def_max": "", "upgradeable": "TRUE", "crit": "12%",
          "health_regen": "3%", "stamina_regen": "2%", "obtain": "Fire Scorpion",
          "image_link": "https://example.com/desert_storm.png",
          "wiki_link": "https://swordburst2.fandom.com/wiki/Desert_Storm"},
