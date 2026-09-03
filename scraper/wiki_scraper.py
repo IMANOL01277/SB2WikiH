@@ -8,10 +8,12 @@ Extrae todos los items de todas las categorias y retorna una lista de dicts.
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urljoin, unquote
 
 import requests
 from bs4 import BeautifulSoup
+
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,100 @@ def _fetch_page(url: str, retries: int = 3) -> BeautifulSoup | None:
                 time.sleep(2 ** attempt)
     logger.error(f"No se pudo descargar: {url}")
     return None
+
+
+def _fetch_item_max_stats(item_name: str, wiki_link: str) -> tuple[str, str, str, str]:
+    """
+    Visita la pagina individual del item para extraer dmg_clean, dmg_max,
+    def_clean, def_max desde el infobox de la wiki.
+    Retorna (dmg_clean, dmg_max, def_clean, def_max).
+    """
+    page_title = wiki_link.split("/wiki/")[-1] if wiki_link else item_name.replace(" ", "_")
+    api_url = f"https://swordburst2.fandom.com/api.php?action=parse&page={page_title}&format=json"
+    try:
+        resp = requests.get(api_url, headers=HEADERS, timeout=15)
+        data = resp.json()
+        if "error" in data:
+            return "", "", "", ""
+        soup = BeautifulSoup(data["parse"]["text"]["*"], "lxml")
+
+        dmg_clean, dmg_max = "", ""
+        def_clean, def_max = "", ""
+
+        for table in soup.find_all("table"):
+            headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
+            is_weapon_table = "base damage" in headers
+            is_armor_table = "defense" in headers or "defence" in headers
+
+            if is_weapon_table or is_armor_table:
+                for row in table.find_all("tr"):
+                    for cell in row.find_all("td"):
+                        src = cell.get("data-source", "")
+                        if src not in ("dmg", "def"):
+                            continue
+                        full = cell.get_text(" ", strip=True)
+                        m = re.search(
+                            r"clean[:\s]+([\d,.]+).*?max[:\s]+([\d,.]+)",
+                            full, re.IGNORECASE | re.DOTALL
+                        )
+                        if m:
+                            clean_val = m.group(1).replace(",", "")
+                            max_val = m.group(2).replace(",", "")
+                        else:
+                            clean_val = re.sub(r"[^\d.,]", "", full)
+                            max_val = ""
+
+                        if src == "dmg":
+                            dmg_clean, dmg_max = clean_val, max_val
+                        elif src == "def":
+                            def_clean, def_max = clean_val, max_val
+
+        return dmg_clean, dmg_max, def_clean, def_max
+    except Exception:
+        return "", "", "", ""
+
+
+def _enrich_items_with_max_stats(items: list[dict], max_workers: int = 20) -> list[dict]:
+    """
+    Enriquece la lista de items con dmg_clean, dmg_max, def_clean, def_max
+    obtenidos concurrentemente desde las paginas individuales del wiki.
+    Solo procesa items que sean armas o armaduras (con wiki_link).
+    """
+    # Filtrar items que necesitan enriquecimiento
+    to_enrich = [
+        item for item in items
+        if item.get("category") in ("Weapon", "Armor") and item.get("wiki_link")
+    ]
+    logger.info(f"Enriqueciendo {len(to_enrich)} items (dmg/def clean+max) con {max_workers} workers...")
+
+    name_to_stats: dict[str, tuple] = {}
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(_fetch_item_max_stats, item["name"], item["wiki_link"]): item["name"]
+            for item in to_enrich
+        }
+        for future in as_completed(future_map):
+            name = future_map[future]
+            try:
+                name_to_stats[name] = future.result()
+            except Exception:
+                name_to_stats[name] = ("", "", "", "")
+
+    # Aplicar stats enriquecidos
+    for item in items:
+        if item["name"] in name_to_stats:
+            dc, dm, dfc, dfm = name_to_stats[item["name"]]
+            if dc:
+                item["dmg_clean"] = dc
+            if dm:
+                item["dmg_max"] = dm
+            if dfc:
+                item["def_clean"] = dfc
+            if dfm:
+                item["def_max"] = dfm
+
+    logger.info("Enriquecimiento completado.")
+    return items
 
 
 def _get_image_url(img_tag) -> str:
@@ -515,6 +611,10 @@ def scrape_item_database() -> list[dict]:
     # ==========================================
 
     logger.info(f"Total items scrapeados del wiki: {len(all_items)}")
+
+    # [2/2] Enriquecer con dmg_max, def_clean y def_max desde paginas individuales
+    all_items = _enrich_items_with_max_stats(all_items, max_workers=20)
+
     return all_items
 
 
