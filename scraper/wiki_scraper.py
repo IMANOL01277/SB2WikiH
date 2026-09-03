@@ -52,16 +52,23 @@ DEFAULT_CRIT = {
 }
 
 
-import cloudscraper
 
 def _fetch_page(url: str, retries: int = 3) -> BeautifulSoup | None:
-    """Descarga y parsea una pagina HTML usando cloudscraper."""
-    scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False})
+    """Descarga y parsea una pagina HTML usando la API de MediaWiki."""
+    page_title = url.split("/wiki/")[-1]
+    api_url = f"https://swordburst2.fandom.com/api.php?action=parse&page={page_title}&format=json"
+    
     for attempt in range(1, retries + 1):
         try:
-            resp = scraper.get(url, timeout=30)
+            resp = requests.get(api_url, headers=HEADERS, timeout=30)
             resp.raise_for_status()
-            return BeautifulSoup(resp.text, "lxml")
+            data = resp.json()
+            if "error" in data:
+                logger.error(f"Error de API: {data['error']}")
+                return None
+            html_content = data["parse"]["text"]["*"]
+            # Envolvemos el contenido en etiquetas HTML para simular la página completa
+            return BeautifulSoup(f"<html><body>{html_content}</body></html>", "lxml")
         except Exception as exc:
             logger.warning(f"Intento {attempt} fallido ({url}): {exc}")
             if attempt < retries:
