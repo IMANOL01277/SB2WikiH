@@ -79,23 +79,63 @@ def _fetch_page(url: str, retries: int = 3) -> BeautifulSoup | None:
     return None
 
 
-def _fetch_item_max_stats(item_name: str, wiki_link: str) -> tuple[str, str, str, str]:
+def _parse_stat_cell(cell_text: str) -> tuple[str, str, str]:
+    """
+    Parsea una celda de stat del infobox.
+    Retorna (tipo, clean, max) donde tipo es:
+      'numeric'  -> valores numéricos normales
+      'scaled'   -> daño escalado por nivel ("+N per level")
+      'special'  -> N/A, Varies, texto libre
+    """
+    text = cell_text.strip()
+    
+    # 1. Daño escalado por nivel
+    m = re.search(r'damage based on level.*?\+(\d+(?:,\d+)?)\s*per\s*level', text, re.IGNORECASE)
+    if m:
+        per_level = m.group(1).replace(',', '')
+        return 'scaled', f'+{per_level}/level', ''
+    
+    # 2. Clean + Max/Maxed (con o sin <p>)
+    m = re.search(r'clean[:\s]+([\d,]+).*?max(?:ed)?[:\s]+([\d,]+)', text, re.IGNORECASE | re.DOTALL)
+    if m:
+        return 'numeric', m.group(1).replace(',', ''), m.group(2).replace(',', '')
+    
+    # 3. Solo Clean (sin Max)
+    m = re.match(r'^clean[:\s]+([\d,\-]+)', text, re.IGNORECASE)
+    if m:
+        return 'numeric', m.group(1).replace(',', ''), ''
+    
+    # 4. Número solo
+    m = re.match(r'^[\d,\-]+$', text.replace(' ', ''))
+    if m:
+        return 'numeric', text.replace(' ', '').replace(',', ''), ''
+    
+    # 5. N/A, Varies, texto especial
+    if text.lower() in ('n/a', 'varies', 'untradable', '') or len(text) > 30:
+        return 'special', text if len(text) <= 30 else '', ''
+    
+    return 'special', text, ''
+
+
+def _fetch_item_max_stats(item_name: str, wiki_link: str) -> tuple[str, str, str, str, str]:
     """
     Visita la pagina individual del item para extraer dmg_clean, dmg_max,
     def_clean, def_max desde el infobox de la wiki.
-    Retorna (dmg_clean, dmg_max, def_clean, def_max).
+    También detecta si el item debe ser upgradeable (Retorna tipo de stat).
+    Retorna (dmg_clean, dmg_max, def_clean, def_max, stat_type).
     """
-    page_title = wiki_link.split("/wiki/")[-1] if wiki_link else item_name.replace(" ", "_")
-    api_url = f"https://swordburst2.fandom.com/api.php?action=parse&page={page_title}&format=json"
+    page_title = unquote(wiki_link.split("/wiki/")[-1]) if wiki_link else item_name.replace(" ", "_")
+    api_url = f"https://swordburst2.fandom.com/api.php?action=parse&page={page_title}&format=json&redirects=1"
     try:
         resp = requests.get(api_url, headers=HEADERS, timeout=15)
         data = resp.json()
         if "error" in data:
-            return "", "", "", ""
+            return "", "", "", "", ""
         soup = BeautifulSoup(data["parse"]["text"]["*"], "lxml")
 
         dmg_clean, dmg_max = "", ""
         def_clean, def_max = "", ""
+        stat_type = ""
 
         for table in soup.find_all("table"):
             headers = [th.get_text(strip=True).lower() for th in table.find_all("th")]
@@ -109,25 +149,18 @@ def _fetch_item_max_stats(item_name: str, wiki_link: str) -> tuple[str, str, str
                         if src not in ("dmg", "def"):
                             continue
                         full = cell.get_text(" ", strip=True)
-                        m = re.search(
-                            r"clean[:\s]+([\d,.]+).*?max[:\s]+([\d,.]+)",
-                            full, re.IGNORECASE | re.DOTALL
-                        )
-                        if m:
-                            clean_val = m.group(1).replace(",", "")
-                            max_val = m.group(2).replace(",", "")
-                        else:
-                            clean_val = re.sub(r"[^\d.,]", "", full)
-                            max_val = ""
+                        t, clean_val, max_val = _parse_stat_cell(full)
+                        if t != "":
+                            stat_type = t
 
                         if src == "dmg":
                             dmg_clean, dmg_max = clean_val, max_val
                         elif src == "def":
                             def_clean, def_max = clean_val, max_val
 
-        return dmg_clean, dmg_max, def_clean, def_max
+        return dmg_clean, dmg_max, def_clean, def_max, stat_type
     except Exception:
-        return "", "", "", ""
+        return "", "", "", "", ""
 
 
 def _enrich_items_with_max_stats(items: list[dict], max_workers: int = 20) -> list[dict]:
@@ -135,6 +168,7 @@ def _enrich_items_with_max_stats(items: list[dict], max_workers: int = 20) -> li
     Enriquece la lista de items con dmg_clean, dmg_max, def_clean, def_max
     obtenidos concurrentemente desde las paginas individuales del wiki.
     Solo procesa items que sean armas o armaduras (con wiki_link).
+    Actualiza el flag de 'upgradeable' según corresponde.
     """
     # Filtrar items que necesitan enriquecimiento
     to_enrich = [
@@ -154,12 +188,12 @@ def _enrich_items_with_max_stats(items: list[dict], max_workers: int = 20) -> li
             try:
                 name_to_stats[name] = future.result()
             except Exception:
-                name_to_stats[name] = ("", "", "", "")
+                name_to_stats[name] = ("", "", "", "", "")
 
-    # Aplicar stats enriquecidos
+    # Aplicar stats enriquecidos y logica de upgradeable
     for item in items:
         if item["name"] in name_to_stats:
-            dc, dm, dfc, dfm = name_to_stats[item["name"]]
+            dc, dm, dfc, dfm, stat_type = name_to_stats[item["name"]]
             if dc:
                 item["dmg_clean"] = dc
             if dm:
@@ -168,6 +202,14 @@ def _enrich_items_with_max_stats(items: list[dict], max_workers: int = 20) -> li
                 item["def_clean"] = dfc
             if dfm:
                 item["def_max"] = dfm
+            
+            # Logica de upgradeable
+            if stat_type == "scaled":
+                item["upgradeable"] = "FALSE"
+            elif item["dmg_clean"] and item["dmg_clean"] == item["dmg_max"]:
+                item["upgradeable"] = "FALSE"
+            elif item["def_clean"] and item["def_clean"] == item["def_max"]:
+                item["upgradeable"] = "FALSE"
 
     logger.info("Enriquecimiento completado.")
     return items
@@ -615,7 +657,17 @@ def scrape_item_database() -> list[dict]:
     # [2/2] Enriquecer con dmg_max, def_clean y def_max desde paginas individuales
     all_items = _enrich_items_with_max_stats(all_items, max_workers=20)
 
-    return all_items
+    # Filtrar items falsos (filas de notas/descripciones sin datos)
+    real_items = []
+    for item in all_items:
+        if item["category"] in ("Weapon", "Armor"):
+            # Si no tiene stats de ataque o defensa en absoluto, es una fila falsa
+            if not item.get("dmg_clean") and not item.get("def_clean"):
+                continue
+        real_items.append(item)
+
+    logger.info(f"Total items finales despues de filtros: {len(real_items)}")
+    return real_items
 
 
 if __name__ == "__main__":
