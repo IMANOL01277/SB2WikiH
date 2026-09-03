@@ -54,13 +54,8 @@ def main() -> int:
     logger.info(f"Items obtenidos del wiki: {len(wiki_items)}")
 
     # --- Paso 2: Enriquecer con datos de paginas individuales (Clean/Max damage) ---
-    logger.info("\n[2/4] Enriqueciendo items con Clean/Max damage de paginas individuales...")
-    try:
-        from scraper.item_page_scraper import enrich_items
-        wiki_items = enrich_items(wiki_items)
-    except Exception as exc:
-        logger.error(f"Error en enriquecimiento individual: {exc}", exc_info=True)
-        logger.warning("Continuando sin datos de Clean/Max por pagina individual")
+    # Nota: Este paso ya se realiza internamente en wiki_scraper.py usando la API de MediaWiki.
+    logger.info("\n[2/4] Enriquecimiento completado en el paso anterior.")
 
     # --- Paso 3: Fetch precios ---
     logger.info("\n[3/4] Descargando precios del Google Sheets...")
