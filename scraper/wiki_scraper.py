@@ -423,6 +423,90 @@ def scrape_item_database() -> list[dict]:
                 else:
                     logger.debug(f"Item duplicado ignorado: {item['name']}")
 
+    # ====== NUEVO BLOQUE: EXTRAER AURAS ======
+    try:
+        logger.info("Descargando Auras: https://swordburst2.fandom.com/wiki/Auras")
+        soup_auras = _fetch_page("https://swordburst2.fandom.com/wiki/Auras")
+        if not soup_auras:
+            raise ValueError("No se pudo obtener la página de Auras")
+        
+        auras_found = 0
+        for i, table in enumerate(soup_auras.find_all("table")):
+            if i == 0: continue
+            rows = table.find_all("tr")
+            if len(rows) < 2: continue
+            
+            name_row, image_row, rarity_row = None, None, None
+            for idx, row in enumerate(rows):
+                style = row.get("style", "")
+                if "font-weight: bold" in style or "font-weight:bold" in style:
+                    name_row = row
+                    if idx > 0: image_row = rows[idx-1]
+                    if idx + 1 < len(rows): rarity_row = rows[idx+1]
+                    break
+                    
+            if not name_row and len(rows) >= 3:
+                image_row, name_row, rarity_row = rows[0], rows[1], rows[2]
+                
+            if not name_row: continue
+                
+            name_cells = name_row.find_all(["td", "th"])
+            img_cells = image_row.find_all(["td", "th"]) if image_row else []
+            rarity_cells = rarity_row.find_all(["td", "th"]) if rarity_row else []
+            
+            for j, cell in enumerate(name_cells):
+                name = cell.get_text(separator=" ").strip()
+                if not name or "Aura Chest" in name: continue
+                
+                rarity = ""
+                if rarity_row and j < len(rarity_cells):
+                    rarity = rarity_cells[j].get_text(separator=" ").strip()
+                    
+                rarity_clean = re.sub(r"Drop.*", "", rarity, flags=re.IGNORECASE).strip()
+                if not rarity_clean and j < len(rarity_cells):
+                    for d in rarity_cells[j].find_all("div"):
+                        t = d.get_text(separator=" ").strip()
+                        if t in ["Common", "Uncommon", "Rare", "Legendary"]:
+                            rarity_clean = t
+                            break
+                rarity = rarity_clean if rarity_clean else "Legendary"
+                
+                img_url = ""
+                img_idx = j + 1 if len(img_cells) > len(name_cells) else j
+                if image_row and img_idx < len(img_cells):
+                    img_tag = img_cells[img_idx].find("img")
+                    if img_tag:
+                        img_url = img_tag.get("data-src") or img_tag.get("src") or ""
+                        img_url = img_url.split("/revision")[0] if "/revision" in img_url else img_url
+                        if img_url.startswith("data:image"): img_url = ""
+                        
+                wiki_name = name.replace(" ", "_")
+                all_items.append({
+                    "name": name,
+                    "type": "Aura",
+                    "sub_type": "Aura",
+                    "category": "Aura",
+                    "rarity": rarity,
+                    "level": "",
+                    "dmg_clean": "",
+                    "dmg_max": "",
+                    "def_clean": "",
+                    "def_max": "",
+                    "upgradeable": "FALSE",
+                    "crit": "",
+                    "health_regen": "",
+                    "stamina_regen": "",
+                    "obtain": "",
+                    "image_link": img_url,
+                    "wiki_link": f"https://swordburst2.fandom.com/wiki/{wiki_name}"
+                })
+                auras_found += 1
+                
+        logger.info(f"Total auras scrapeadas: {auras_found}")
+    except Exception as exc:
+        logger.error(f"Error parseando Auras: {exc}", exc_info=True)
+    # ==========================================
+
     logger.info(f"Total items scrapeados del wiki: {len(all_items)}")
     return all_items
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 price_scraper.py
 ~~~~~~~~~~~~~~~~
 Descarga y parsea el Google Sheets de precios del mercado P2P de SwordBurst 2.
@@ -24,6 +24,7 @@ SHEETS = {
     "max_legendaries":   628419816,
     "accessories":       1019617648,
     "misc":              1084564302,
+    "auras":             780998096,
 }
 
 HEADERS = {
