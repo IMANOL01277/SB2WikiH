@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 id,name,category,subtype,rarity,level,image_url,wiki_url,obtain,dmg_clean,dmg_max,def_clean,def_max,upgradeable,crit,health_regen,stamina_regen,price_clean_oml,price_max_oml,price_source,price_category,last_updated,updated_at
 1,Abyss Sentinel,Armor,Exclusive Blossom,Tribute,415,https://swordburst2.fandom.com/Special:Redirect/file/Abyss_Sentinel.png,https://swordburst2.fandom.com/wiki/Abyss_Sentinel,"Azeis, Spirit of the Blossom",,,589286,825000,TRUE,,+35%,+50%,250+,100-150,tributes,- ROTATIONAL FLOOR TRIBUTES -,2026-09-19 02:35 UTC,2026-09-18T22:52:00Z
 2,Abridged Amethyst,Spear,Limited,Legendary,250,https://swordburst2.fandom.com/Special:Redirect/file/Abridged_Amethyst.png,https://swordburst2.fandom.com/wiki/Abridged_Amethyst,"Kloff, Marauder of the Frost",11660,,,,TRUE,21%,+10%,+10%,0.5 - 1,,clean_legendaries,Easter Realm (2023),2026-09-19 02:35 UTC,2026-09-18T22:52:00Z
