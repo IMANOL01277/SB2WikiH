@@ -1,4 +1,4 @@
-"""
+﻿"""
 main.py
 ~~~~~~~
 Orquestador principal del pipeline SB2ItemDB.
@@ -11,7 +11,6 @@ import os
 import sys
 import time
 
-# Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -19,27 +18,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("sb2itemdb")
 
-# Ruta del CSV (relativo al root del proyecto)
 CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SB2ItemDB.csv")
 
-
 def main() -> int:
-    """
-    Pipeline principal:
-    1. Scrape wiki -> items
-    2. Fetch precios del sheet -> prices
-    3. Merge y escribir CSV
-
-    Retorna exit code: 0 = exito, 1 = error critico
-    """
     start_time = time.time()
     logger.info("=" * 60)
-    logger.info("SB2ItemDB Update Pipeline iniciado")
+    logger.info("SB2ItemDB Update Pipeline (API Version) iniciado")
     logger.info(f"CSV destino: {CSV_PATH}")
     logger.info("=" * 60)
 
-    # --- Paso 1: Scrape del wiki ---
-    logger.info("\n[1/3] Scrapeando Item Database del fandom wiki...")
+    # --- Paso 1: Scrape API ---
+    logger.info("\n[1/3] Descargando JSON del Item Database (API)...")
     try:
         from scraper.wiki_scraper import scrape_item_database
         wiki_items = scrape_item_database()
@@ -53,28 +42,23 @@ def main() -> int:
 
     logger.info(f"Items obtenidos del wiki: {len(wiki_items)}")
 
-    # --- Paso 2: Enriquecer con datos de paginas individuales (Clean/Max damage) ---
-    # Nota: Este paso ya se realiza internamente en wiki_scraper.py usando la API de MediaWiki.
-    logger.info("\n[2/4] Enriquecimiento completado en el paso anterior.")
-
-    # --- Paso 3: Fetch precios ---
-    logger.info("\n[3/4] Descargando precios del Google Sheets...")
+    # --- Paso 2: Fetch precios ---
+    logger.info("\n[2/3] Descargando precios del Google Sheets...")
     try:
         from scraper.price_scraper import fetch_all_prices
         prices = fetch_all_prices()
     except Exception as exc:
         logger.error(f"Error en price scraper: {exc}", exc_info=True)
-        # No abortar: continuar sin precios
         prices = {}
         logger.warning("Continuando sin precios del mercado")
 
     logger.info(f"Items con precio encontrados: {len(prices)}")
 
-    # --- Paso 4: Merge y escribir CSV ---
-    logger.info("\n[4/4] Generando SB2ItemDB.csv...")
+    # --- Paso 3: Merge y escribir CSV ---
+    logger.info("\n[3/3] Generando SB2ItemDB.csv...")
     try:
-        from scraper.merge import build_csv
-        total, with_prices, changed = build_csv(wiki_items, prices, CSV_PATH)
+        from scraper.merge import merge_and_save
+        merge_and_save(wiki_items, prices, CSV_PATH)
     except Exception as exc:
         logger.error(f"Error critico en merge/escritura: {exc}", exc_info=True)
         return 1
@@ -82,13 +66,9 @@ def main() -> int:
     elapsed = time.time() - start_time
     logger.info("\n" + "=" * 60)
     logger.info("Pipeline completado exitosamente")
-    logger.info(f"  Total items:       {total}")
-    logger.info(f"  Items con precio:  {with_prices}")
-    logger.info(f"  Cambios detectados: {'SI' if changed else 'NO'}")
     logger.info(f"  Tiempo total:      {elapsed:.1f}s")
     logger.info("=" * 60)
 
-    # Exit code 0 siempre en exito (GitHub Actions commit solo si cambia el archivo)
     return 0
 
 
